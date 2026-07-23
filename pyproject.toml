@@ -2,4 +2,16 @@
 name = "my-trip-assist"
 version = "0.1.0"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "ipykernel>=7.3.0",
+    "ipython>=9.15.0",
+    "langchain-openai>=1.4.0",
+    "langgraph>=1.2.9",
+    "openai>=2.46.0",
+    "pydantic>=2.13.4",
+    "python-dotenv>=1.2.2",
+]
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
