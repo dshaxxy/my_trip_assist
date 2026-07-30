@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
+  <component name="Black">
+    <option name="sdkName" value="uv (My_trip_assist)" />
+  </component>
   <component name="ProjectRootManager" version="2" project-jdk-name="uv (My_trip_assist)" project-jdk-type="Python SDK" />
 </project>
