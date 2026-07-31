@@ -1,4 +1,4 @@
-from memory.manager import MemoryManager
+from my_hello_agents.memory.manager import MemoryManager
 
 def get_memory_manager():
     return MemoryManager()

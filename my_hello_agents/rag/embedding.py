@@ -1,5 +1,4 @@
-import os
-import dashscope
+
 from dashscope import TextEmbedding
 
 class EmbeddingService:

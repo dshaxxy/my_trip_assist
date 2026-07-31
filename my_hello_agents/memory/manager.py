@@ -7,12 +7,12 @@ from langchain_openai import ChatOpenAI
 from qdrant_client.http.models import ScoredPoint
 
 from client.model import model
-from memory.preference import PreferenceMemory
-from memory.semantic import SemanticMemory
+from my_hello_agents.memory.preference import PreferenceMemory
+from my_hello_agents.memory.semantic import SemanticMemory
 from my_hello_agents.memory.episodic import EpisodicMemory
 from my_hello_agents.memory.history import HistoryMemory
 from my_hello_agents.memory.work import WorkMemory
-from rag.rag_service import Chunk
+from my_hello_agents.rag.rag_service import Chunk
 
 
 class MemoryManager:
@@ -93,11 +93,11 @@ class MemoryManager:
         """
         return self.episodicMemory.get(user_id, query)
 
-    def add_semantic_memory(self, user_id: str, query: str, response: str):
+    def add_semantic_memory(self, user_id: str, file_path: str, password: str = None):
         """
         添加语义记忆
         """
-        self.semanticMemory.add(user_id, query, response)
+        self.semanticMemory.add(user_id, file_path, password)
 
     def get_semantic_memory(self, user_id: str, query: str) -> List[Chunk]:
         """

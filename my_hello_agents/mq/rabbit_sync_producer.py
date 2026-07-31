@@ -3,7 +3,6 @@ from typing import List, Dict, Any
 import pika
 from pika.exceptions import AMQPConnectionError, StreamLostError
 from dotenv import load_dotenv
-import os
 import time
 from langchain_core.messages import BaseMessage, message_to_dict, messages_from_dict, HumanMessage, AIMessage
 

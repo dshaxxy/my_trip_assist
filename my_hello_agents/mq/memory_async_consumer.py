@@ -8,7 +8,7 @@ from aio_pika.abc import AbstractQueue
 from langchain_core.messages import messages_from_dict, BaseMessage
 
 # 你的记忆提取、写入Qdrant工具函数
-from client.memory_client import get_memory_manager
+from my_hello_agents.client.memory_client import get_memory_manager
 
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://agent:123321@192.168.150.101:5672//agent")
 QUEUE_NAME = "memory_extract_queue"

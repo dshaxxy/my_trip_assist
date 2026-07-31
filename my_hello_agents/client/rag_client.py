@@ -1,4 +1,4 @@
-from rag.rag_service import RagService
+from my_hello_agents.rag.rag_service import RagService
 
 def get_rag_service():
     return RagService()

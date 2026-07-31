@@ -5,12 +5,12 @@ from langchain_core.documents import Document
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from qdrant_client.http.models import VectorParams, Distance, PointStruct, Filter, FieldCondition, MatchValue
-from client.model import model
-from client.neo4j_client import neo4j_client
-from client.qdrant import qdrant_client
-from rag.embedding import EmbeddingService
-from utils.path_tool import get_abs_path
-from utils.prompt_loader import load_extract_prompt
+from my_hello_agents.client.model import model
+from my_hello_agents.client.neo4j_client import neo4j_client
+from my_hello_agents.client.qdrant import qdrant_client
+from my_hello_agents.rag.embedding import EmbeddingService
+from my_hello_agents.utils.path_tool import get_abs_path
+from my_hello_agents.utils.prompt_loader import load_extract_prompt
 
 
 class Chunk(BaseModel):
@@ -231,7 +231,7 @@ class RagService:
             return []
 
         # 拼装当前用户命名空间的实体ID
-        entity_ids = [f"{user_id}/{ent['name']}".replace("/", "_") for ent in entities]
+        entity_ids = [f"{user_id}_{ent['name']}" for ent in entities]
 
         with self.neo4j_client.session() as session:
             cypher = """
