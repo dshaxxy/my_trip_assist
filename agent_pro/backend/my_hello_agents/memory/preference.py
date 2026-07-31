@@ -1,11 +1,10 @@
-import os
 from typing import Any
 
 import redis
 from langchain_openai import ChatOpenAI
 
-from my_hello_agents.memory.base import BaseMemory
-from my_hello_agents.utils.prompt_loader import load_preference_prompt
+from memory.base import BaseMemory
+from utils.prompt_loader import load_preference_prompt
 
 
 class PreferenceMemory(BaseMemory):

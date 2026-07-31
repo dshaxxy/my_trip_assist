@@ -6,15 +6,15 @@ from dotenv import load_dotenv
 load_dotenv()
 import re
 import uuid
-from my_hello_agents.client.model import model
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from client.model import model
+from langchain_core.messages import BaseMessage
 from langchain_openai import ChatOpenAI
 from qdrant_client.http.models import VectorParams, Distance, PointStruct, Filter, FieldCondition, MatchValue, \
     ScoredPoint
-from my_hello_agents.client.qdrant import get_qdrant_client, qdrant_client
-from my_hello_agents.memory.base import BaseMemory
-from my_hello_agents.rag.embedding import EmbeddingService
-from my_hello_agents.utils.prompt_loader import load_summary_prompt
+from client.qdrant import qdrant_client
+from memory.base import BaseMemory
+from rag.embedding import EmbeddingService
+from utils.prompt_loader import load_summary_prompt
 
 
 class EpisodicMemory(BaseMemory):

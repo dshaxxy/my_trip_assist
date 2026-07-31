@@ -1,6 +1,6 @@
 from typing import List
 from langchain_core.messages import BaseMessage
-from my_hello_agents.memory.base import BaseMemory
+from memory.base import BaseMemory
 
 
 class WorkMemory(BaseMemory):

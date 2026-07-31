@@ -2,15 +2,17 @@ import os
 from dotenv import load_dotenv
 from langgraph.constants import START, END
 from langgraph.graph import StateGraph
-from my_hello_agents.mq.rabbit_sync_producer import MemorySyncProducer
+from langgraph.types import StreamWriter
+
+from mq.rabbit_sync_producer import MemorySyncProducer
 load_dotenv()
-from my_hello_agents.agent.base import SimpleState
-from my_hello_agents.utils.context_tool import ContextBuilder, count_tokens
-from my_hello_agents.client.model import get_model
-from my_hello_agents.client.memory_client import get_memory_manager
+from agent.base import SimpleState
+from utils.context_tool import ContextBuilder, count_tokens
+from client.model import get_model
+from client.memory_client import memory_manager
 from langchain_core.messages import HumanMessage
 
-memory_manager = get_memory_manager()
+memory_manager = memory_manager
 context_builder = ContextBuilder(memory_manager)
 producer = MemorySyncProducer()
 
@@ -23,7 +25,7 @@ def start_node(state: SimpleState) -> SimpleState:
     memory_manager.add_history_memory(key, HumanMessage(content=state.query))
     return state
 
-def work_memory_node(state: SimpleState) -> SimpleState:
+def work_memory_node(state: SimpleState) -> dict:
     """
     工作记忆节点, 使用llm判断工作记忆是否改变
     """
@@ -43,15 +45,17 @@ def work_memory_node(state: SimpleState) -> SimpleState:
     chat_history = "\n".join([f"{i.type}: {i.content}" for i in work_memory])
     result = model.invoke(topic_switch_simple_prompt.format(chat_history=chat_history, query=state.query))
     if "不变" in result.content:
-        state.work_memory = work_memory
+        work_memory = work_memory
     else:
         producer.send_memory_task(user_id=state.user_id, chat_history=work_memory)
         memory_manager.clear_work_memory(key)
-        state.work_memory = []
+        work_memory = []
     print("[工作记忆]：", work_memory)
-    return state
+    return {
+        "work_memory": work_memory
+    }
 
-def episodic_memory_node(state: SimpleState) -> SimpleState:
+def episodic_memory_node(state: SimpleState) -> dict:
     """
     情景记忆节点, 加载长期情景记忆
     :param state:
@@ -59,10 +63,11 @@ def episodic_memory_node(state: SimpleState) -> SimpleState:
     """
     episodic_memory = memory_manager.get_episodic_memory(user_id=state.user_id, query=state.query)
     print("[情景记忆]：", episodic_memory)
-    state.episodic_memory = episodic_memory
-    return state
+    return {
+        "episodic_memory": episodic_memory
+    }
 
-def history_memory_node(state: SimpleState) -> SimpleState:
+def history_memory_node(state: SimpleState) -> dict:
     """
     历史记忆节点, 加载短期历史记忆
     :param state:
@@ -71,10 +76,11 @@ def history_memory_node(state: SimpleState) -> SimpleState:
     key = f"{state.user_id}_{state.session_id}"
     history_memory = memory_manager.get_history_memory(key)
     print("[历史记忆]：", history_memory)
-    state.history_memory = history_memory
-    return state
+    return {
+        "history_memory": history_memory
+    }
 
-def preference_memory_node(state: SimpleState) -> SimpleState:
+def preference_memory_node(state: SimpleState) -> dict:
     """
     偏好记忆节点, 加载偏好记忆
     :param state:
@@ -82,10 +88,11 @@ def preference_memory_node(state: SimpleState) -> SimpleState:
     """
     preference_memory = memory_manager.get_preference_memory(state.user_id, state.query)
     print("[偏好记忆]：", preference_memory)
-    state.preference_memory = preference_memory
-    return state
+    return {
+        "preference_memory": preference_memory
+    }
 
-def semantic_memory_node(state: SimpleState) -> SimpleState:
+def semantic_memory_node(state: SimpleState) -> dict:
     """
     语义记忆节点, 加载语义记忆
     :param state:
@@ -100,15 +107,17 @@ def semantic_memory_node(state: SimpleState) -> SimpleState:
     result = model.invoke(prompt.format(query=state.query))
     print("[是否需要语义记忆判断结果]：", result.content)
     if "不需要" in result.content:
-        state.semantic_memory = []
+        semantic_memory = []
     else:
         if state.user_id == "666":
             key = "666_999"
         else:
             key = state.user_id
-        state.semantic_memory = memory_manager.get_semantic_memory(key, state.query)
-    print("[语义记忆]：", state.semantic_memory)
-    return state
+        semantic_memory = memory_manager.get_semantic_memory(key, state.query)
+    print("[语义记忆]：", semantic_memory)
+    return {
+        "semantic_memory": semantic_memory
+    }
 
 def context_node(state: SimpleState) -> SimpleState:
     """
@@ -122,16 +131,53 @@ def context_node(state: SimpleState) -> SimpleState:
     print("[上下文token数]：", context_tokens)
     return state
 
-def llm_node(state: SimpleState) -> SimpleState:
-    """
-    LLM 节点: 使用 LLM 生成回复
-    :param state:
-    :return:
-    """
+# async def llm_node(state: SimpleState) -> SimpleState:
+#     """
+#     LLM 节点: 使用 LLM 生成回复
+#     :param state:
+#     :return:
+#     """
+#     model = get_model()
+#     prompt = state.system_prompt
+#     result = model.invoke(prompt.format(query=state.query))
+#     state.messages.append(result)
+#     return state
+
+# 添加 stream_writer 参数！
+# async def llm_node(state: SimpleState, stream_writer: StreamWriter) -> SimpleState:
+#     model = get_model()
+#     prompt = state.system_prompt.format(query=state.query)
+#
+#     full_response = ""
+#     # 使用异步流式 astream
+#     async for chunk in model.astream(prompt):
+#         text_piece = chunk.content
+#         if not text_piece:
+#             continue
+#         full_response += text_piece
+#         # 向外推送增量文本，自定义你想要的数据格式
+#         stream_writer.write({
+#             "type": "llm_chunk",
+#             "content": text_piece
+#         })
+#     # 最终完整消息存入state，供后续 memory_update 使用
+#     from langchain_core.messages import AIMessage
+#     state.messages.append(AIMessage(content=full_response))
+#     return state
+
+async def llm_node(state: SimpleState) -> SimpleState:
     model = get_model()
-    prompt = state.system_prompt
-    result = model.invoke(prompt.format(query=state.query))
-    state.messages.append(result)
+    prompt_text = state.system_prompt.format(query=state.query)
+
+    full_response = ""
+    async for chunk in model.astream(prompt_text):
+        text_piece = chunk.content
+        if not text_piece:
+            continue
+        full_response += text_piece
+
+    from langchain_core.messages import AIMessage
+    state.messages.append(AIMessage(content=full_response))
     return state
 
 def memory_update_node(state: SimpleState) -> SimpleState:
@@ -199,3 +245,38 @@ builder.add_edge("llm", "memory_update")
 builder.add_edge("memory_update", "end")
 builder.add_edge("end", END)
 
+graph = builder.compile()
+
+def get_agent():
+    return graph
+
+# import asyncio
+#
+# async def test():
+#     res = await llm_node(SimpleState(user_id="666", session_id="999", query="给我写一篇500字的关于AI的文章", messages=[]))
+#     print(res)
+#
+# if __name__ == "__main__":
+#     async def sse_chat():
+#         input_state = SimpleState(
+#             user_id="666",
+#             session_id="999",
+#             query="给我写一篇500字的关于AI的文章",
+#             messages=[]
+#         )
+#         config = {"configurable": {"thread_id": f"666_999"}}
+#
+#         async for event in graph.astream_events(input_state, config=config, version="v2"):
+#             # 只捕获 llm 节点内部 LLM 的输出
+#             node_name = event["metadata"].get("langgraph_node")
+#             if (
+#                     event["event"] == "on_chat_model_stream"
+#                     and node_name == "llm"
+#             ):
+#                 chunk = event["data"]["chunk"]
+#                 text_piece = chunk.content
+#                 if text_piece:
+#                     print(text_piece, end="")
+#                     # yield build_sse("message", {"content": text_piece, "done": False})
+#
+#     asyncio.run(sse_chat())

@@ -1,7 +1,7 @@
 import json
 import redis
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
-from my_hello_agents.memory.base import BaseMemory
+from memory.base import BaseMemory
 
 
 class HistoryMemory(BaseMemory):

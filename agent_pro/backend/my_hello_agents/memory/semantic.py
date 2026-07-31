@@ -1,7 +1,6 @@
-from langchain_openai import ChatOpenAI
-from my_hello_agents.memory.base import BaseMemory
-from my_hello_agents.client.rag_client import rag_service
-from my_hello_agents.rag.rag_service import Chunk
+from memory.base import BaseMemory
+from client.rag_client import rag_service
+from rag.rag_service import Chunk
 
 
 class SemanticMemory(BaseMemory):

@@ -3,10 +3,10 @@ import tiktoken
 from langchain_core.messages import BaseMessage
 from qdrant_client.http.models import ScoredPoint
 
-from my_hello_agents.agent.base import SimpleState
-from my_hello_agents.memory.manager import MemoryManager
-from my_hello_agents.rag.rag_service import Chunk
-from my_hello_agents.utils.prompt_loader import load_system_prompt
+from agent.base import SimpleState
+from memory.manager import MemoryManager
+from rag.rag_service import Chunk
+from utils.prompt_loader import load_system_prompt
 
 def count_tokens(text: str) -> int:
     """计算文本token数（使用tiktoken）"""
