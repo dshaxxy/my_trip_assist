@@ -44,7 +44,7 @@ class RagService:
             self.qdrant_client.create_collection(
                 collection_name=self.collection_name,
                 vectors_config=VectorParams(
-                    size=1024,  # 根据你的模型调整
+                    size=1536,  # 根据你的模型调整
                     distance=Distance.COSINE  # 余弦相似度
                 )
             )

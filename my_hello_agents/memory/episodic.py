@@ -38,7 +38,7 @@ class EpisodicMemory(BaseMemory):
             self.qdrant_client.create_collection(
                 collection_name=self.collection_name,
                 vectors_config=VectorParams(
-                    size=1024,  # 根据你的模型调整
+                    size=1536,  # 根据你的模型调整
                     distance=Distance.COSINE  # 余弦相似度
                 )
             )
@@ -132,9 +132,9 @@ class EpisodicMemory(BaseMemory):
 
             # 综合加权打分
             final_score = (
-                    0.50 * sim_score
-                    + 0.30 * importance
-                    + 0.20 * time_factor
+                    0.70 * sim_score
+                    + 0.20 * importance
+                    + 0.10 * time_factor
             )
             point.score = final_score
             candidate_list.append(point)
@@ -161,7 +161,7 @@ if __name__ == '__main__':
     # episodic_memory.add("666_999", messages)
     model = model
     episodic_memory = EpisodicMemory(model)
-    points = episodic_memory.get("666_999", "我记得之前问过你分苹果的事情是不是, 是什么时候来着")
+    points = episodic_memory.get("666", "我记得之前问过你分苹果的事情是不是, 是什么时候来着")
     if points:
         for i in points:
             print(i)

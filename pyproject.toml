@@ -3,6 +3,7 @@ name = "my-trip-assist"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
+    "aio-pika>=10.0.1",
     "booktype>=1.5",
     "dashscope>=1.26.4",
     "fitz>=0.0.1.dev2",

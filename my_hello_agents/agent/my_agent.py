@@ -1,16 +1,22 @@
 import datetime
+import os
 
 from dotenv import load_dotenv
+from langgraph.constants import START, END
+from langgraph.graph import StateGraph
+
+from mq.rabbit_sync_producer import MemorySyncProducer
 
 load_dotenv()
 from agent.base import SimpleState
 from utils.context_tool import ContextBuilder, count_tokens
 from langchain_core.messages import HumanMessage
 from client.model import get_model
-from memory.manager import MemoryManager
+from client.memory_client import get_memory_manager
 
-memory_manager = MemoryManager()
+memory_manager = get_memory_manager()
 context_builder = ContextBuilder(memory_manager)
+producer = MemorySyncProducer()
 
 
 def start_node(state: SimpleState) -> SimpleState:
@@ -18,7 +24,7 @@ def start_node(state: SimpleState) -> SimpleState:
     开始节点
     """
     key = f"{state.user_id}_{state.session_id}"
-    memory_manager.add_history_memory(key, HumanMessage(content=state.query, additional_kwargs={"timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}))
+    memory_manager.add_history_memory(key, HumanMessage(content=state.query))
     return state
 
 def work_memory_node(state: SimpleState) -> SimpleState:
@@ -43,7 +49,8 @@ def work_memory_node(state: SimpleState) -> SimpleState:
     if "不变" in result.content:
         state.work_memory = work_memory
     else:
-        # todo 话题转变，清空工作记忆 发送消息到消息队列去异步转化为长期记忆
+        producer.send_memory_task(user_id=state.user_id, chat_history=work_memory)
+        memory_manager.clear_work_memory(key)
         state.work_memory = []
     print("[工作记忆]：", work_memory)
     return state
@@ -139,7 +146,21 @@ def memory_update_node(state: SimpleState) -> SimpleState:
     """
     key = f"{state.user_id}_{state.session_id}"
     memory_manager.add_history_memory(key, state.messages[-1])
-    # todo: 工作记忆相关操作  超出阈值转化为长期记忆
+    memory_manager.add_work_memory(key, state.messages)
+    messages = memory_manager.get_work_memory(key)
+
+    if len(messages) > int(os.getenv("MAX_WORKING_MEMORY", 20)):
+        # 切分：头部旧消息 + 保留最新消息
+        shift_out_messages = messages[:int(os.getenv("SHIFT_NUM", 10))]
+        remain_messages = messages[int(os.getenv("SHIFT_NUM", 10)):]
+
+        print(f"【滑动窗口触发】用户{state.user_id}，移出{len(shift_out_messages)}条消息提取长期记忆")
+        # 推送被切走的历史消息到MQ，异步提炼
+        producer.send_memory_task(user_id=state.user_id, chat_history=shift_out_messages)
+
+        # 更新state，内存只保留最新消息
+        memory_manager.update_work_memory(key, remain_messages)
+        state.messages = remain_messages
 
     return state
 
@@ -151,14 +172,34 @@ def end_node(state: SimpleState) -> SimpleState:
     """
     return state
 
+builder = StateGraph(SimpleState)
+builder.add_node("start", start_node)
+builder.add_node("work_memory", work_memory_node)
+builder.add_node("episodic_memory", episodic_memory_node)
+builder.add_node("history_memory", history_memory_node)
+builder.add_node("preference_memory", preference_memory_node)
+builder.add_node("semantic_memory", semantic_memory_node)
+builder.add_node("context", context_node)
+builder.add_node("llm", llm_node)
+builder.add_node("memory_update", memory_update_node)
+builder.add_node("end", end_node)
 
-if __name__ == '__main__':
-    state = SimpleState(user_id="666", session_id="999", query="人体循环系统由什么组成？体循环和肺循环作用是什么？", messages=[])
-    state1 = start_node(state)
-    state2 = work_memory_node(state1)
-    state3 = episodic_memory_node(state2)
-    state4 = history_memory_node(state3)
-    state5 = preference_memory_node(state4)
-    state6 = semantic_memory_node(state5)
-    context_node(state6)
+builder.add_edge(START, "start")
+
+builder.add_edge("start", "work_memory")
+builder.add_edge("start", "episodic_memory")
+builder.add_edge("start", "history_memory")
+builder.add_edge("start", "preference_memory")
+builder.add_edge("start", "semantic_memory")
+
+builder.add_edge("work_memory", "context")
+builder.add_edge("episodic_memory", "context")
+builder.add_edge("history_memory", "context")
+builder.add_edge("semantic_memory", "context")
+builder.add_edge("preference_memory", "context")
+
+builder.add_edge("context", "llm")
+builder.add_edge("llm", "memory_update")
+builder.add_edge("memory_update", "end")
+builder.add_edge("end", END)
 

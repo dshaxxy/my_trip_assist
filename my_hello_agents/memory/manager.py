@@ -50,6 +50,20 @@ class MemoryManager:
         """
         return self.workMemory.get(key)
 
+    def clear_work_memory(self, key: str):
+        """
+        清除工作记忆
+        """
+        self.workMemory.clear(key)
+
+    def update_work_memory(self, key: str, value: List[BaseMessage]):
+        """
+        更新工作记忆中的信息。
+        :param key: 记忆键 user_id + session_id
+        :param value: 记忆值，包含消息的列表
+        """
+        self.workMemory.update(key, value)
+
     def add_history_memory(self, key: str, message: BaseMessage):
         """
         添加历史记忆

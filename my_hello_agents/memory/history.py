@@ -16,13 +16,14 @@ class HistoryMemory(BaseMemory):
         """
         添加历史记忆
         """
-        self.redis_client.rpush(self.prefix + key, json.dumps({"role": message.type, "content": message.content, "time": message.additional_kwargs["timestamp"]}))
+        import datetime
+        self.redis_client.rpush(self.prefix + key, json.dumps({"role": message.type, "content": message.content, "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}))
 
     def get(self, key: str) -> list[BaseMessage]:
         """
         获取历史记忆
         """
-        history = self.redis_client.lrange(self.prefix + key, -10, -1)
+        history = self.redis_client.lrange(self.prefix + key, -11, -1)
         messages = []
         if not history:
             return messages

@@ -2,10 +2,12 @@ from typing import List
 from langchain_core.messages import BaseMessage
 from my_hello_agents.memory.base import BaseMemory
 
+
 class WorkMemory(BaseMemory):
     """
     工作记忆
     """
+
     def __init__(self):
         self.data = {}
 
@@ -29,3 +31,20 @@ class WorkMemory(BaseMemory):
             return []
         else:
             return self.data[key]
+
+    def clear(self, key: str):
+        """
+        清除工作记忆中的信息。
+        :param key: 记忆键 user_id + session_id
+        """
+        if key in self.data:
+            self.data[key] = []
+
+    def update(self, key: str, value: List[BaseMessage]):
+        """
+        更新工作记忆中的信息。
+        :param key: 记忆键 user_id + session_id
+        :param value: 记忆值，包含消息的列表
+        """
+        if key in self.data:
+            self.data[key] = value
