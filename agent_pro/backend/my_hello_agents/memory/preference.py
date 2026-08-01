@@ -34,6 +34,8 @@ class PreferenceMemory(BaseMemory):
         old_preference = self.redis_client.get(self.prefix + key)
         if old_preference is not None:
             preference = old_preference.decode("utf-8")
+        else:
+            preference = ""
         preference_result = self.model.invoke(self.preference_prompt.format(current_context=preference, query=query))
         if "NULL" in preference_result.content:
             if old_preference is None:
