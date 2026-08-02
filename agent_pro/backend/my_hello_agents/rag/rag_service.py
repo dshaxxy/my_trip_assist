@@ -1,8 +1,12 @@
 import json
+import re
 import uuid
+
+from dotenv import load_dotenv
+
+load_dotenv()
 from pydantic import BaseModel
 from langchain_core.documents import Document
-from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from qdrant_client.http.models import VectorParams, Distance, PointStruct, Filter, FieldCondition, MatchValue
 from client.model import model
@@ -49,11 +53,170 @@ class RagService:
                 )
             )
 
+    # ============ PDF 加载 / 清洗 / 分片 (pdfplumber) ============
+
+    @staticmethod
+    def _detect_scanned(pdf) -> bool:
+        """扫描版检测:首页提取不到有效文本即判定为扫描版。"""
+        first_page = pdf.pages[0]
+        text = (first_page.extract_text() or "").strip()
+        return len(text) < 20 or "�" in text
+
+    @staticmethod
+    def _clean_text(text: str, merge_lines: bool = True) -> str:
+        """清洗 PDF 提取文本:去控制字符/页码/装饰线,处理软换行,压缩空白。
+
+        merge_lines=True(文本):去掉所有折行换行,仅保留句子结束标点后的换行,
+        使段落完整不截断。merge_lines=False(表格):保留行结构。
+        """
+        if not text:
+            return ""
+        # 去掉控制字符(PDF 常把 SOH/FF 等当段落/分页分隔符)
+        text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+        # 独立成行的页码(1-3 位数字),兼容页首/页尾及末尾无换行
+        text = re.sub(r"(?:^|\n)\s*\d{1,3}\s*(?:\n|$)", "\n", text)
+        # 分隔线 / 装饰线
+        text = re.sub(r"\n[—\-_＝=]{3,}\n", "\n", text)
+        if merge_lines:
+            # 去掉所有折行换行,仅保留句子结束标点后的换行作为段落边界
+            text = re.sub(r"(?<![。！？；;])[\r\n]+", "", text)
+        # 压缩连续空白
+        text = re.sub(r"[ \t]{2,}", " ", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    @staticmethod
+    def _rows_to_markdown(rows: list[list]) -> str:
+        """表格数据转 Markdown 表格字符串。"""
+        if not rows:
+            return ""
+        # 补全行内空单元格,保证列对齐
+        width = max((len(r) for r in rows), default=0)
+        rows = [r + [""] * (width - len(r)) for r in rows]
+        lines = ["| " + " | ".join(str(c).replace("|", "\\|").strip() for c in rows[0]) + " |",
+                 "| " + " | ".join(["---"] * width) + " |"]
+        for row in rows[1:]:
+            lines.append("| " + " | ".join(str(c).replace("|", "\\|").strip() for c in row) + " |")
+        return "\n".join(lines)
+
+    @classmethod
+    def _table_to_documents(cls, table_md: str, page: int, chapter: str = "") -> list[Document]:
+        """把一张 Markdown 表格按行切成多个 Document,带重复表头与行 overlap。"""
+        lines = table_md.split("\n")
+        header = lines[0]
+        sep = lines[1]
+        body = lines[2:]
+        # 每块最多容纳的行数(按总行数自适应)
+        block_rows = 12 if len(body) > 12 else max(6, len(body))
+        docs = []
+        for start in range(0, len(body), block_rows):
+            block = body[start:start + block_rows]
+            block_text = "\n".join([header, sep, *block])
+            if start > 0:
+                # 衔接上一块最后一行,保持行间上下文
+                block_text = "\n".join([header, sep, body[start - 1], *block])
+            docs.append(Document(
+                page_content=block_text,
+                metadata={
+                    "type": "table",
+                    "page": page,
+                    "chapter": chapter,
+                    "start_index": start,
+                }
+            ))
+        return docs
+
+    def _extract_doc_chunk(self, file_path: str, password: str = None) -> list[Document]:
+        """
+        使用 pdfplumber 完成 PDF 的加载、清洗、分片(含表格),返回 Document 列表。
+        - 扫描版 PDF 直接抛错,提示走 OCR
+        - 文本块:跨页拼接后统一按语义切分,保留 page 元数据
+        - 表格块:转 Markdown 表格,按行带切分,type="table" 标注
+        - 用 outside_bbox 裁掉表格区域,避免表格内容在文本块中重复
+        """
+        import logging
+        import pdfplumber
+
+        # pdfminer 对缺 FontBBox 元数据的字体打 WARNING,是已知无害噪音,静默掉
+        logging.getLogger("pdfminer").setLevel(logging.ERROR)
+
+        path = get_abs_path(file_path)
+        docs: list[Document] = []
+
+        with pdfplumber.open(path, password=password) as pdf:
+            if self._detect_scanned(pdf):
+                raise ValueError(
+                    f"检测到扫描版 PDF(首页无文本层): {path},请先对文档做 OCR 再入库"
+                )
+
+            all_text_pages = []          # [(page_no, cleaned_text)]
+            table_docs: list[Document] = []
+
+            for page in pdf.pages:
+                page_no = page.page_number
+
+                # ---- 表格:仅当页面竖线足够多(密集格线)时才检测,排除页框/装饰线误判 ----
+                v_edges = [e for e in page.edges if e["orientation"] == "v"]
+                tables = []
+                if len(v_edges) >= 5:
+                    tables = page.find_tables()
+                if tables:
+                    for table in tables:
+                        rows = table.extract()
+                        # 过滤混入 bbox 的正文行:真实表格行含多个短单元格,正文行是单个超长单元格
+                        rows = [r for r in rows if sum(1 for c in r if str(c or "").strip()) >= 2]
+                        if len(rows) < 2:
+                            continue
+                        table_md = self._clean_text(self._rows_to_markdown(rows), merge_lines=False)
+                        if table_md:
+                            table_docs.extend(self._table_to_documents(table_md, page_no))
+
+                # ---- 文本:裁掉所有表格区域后提取,避免与表格块重复 ----
+                text_area = page
+                for table in tables:
+                    text_area = text_area.outside_bbox(table.bbox)
+                page_text = (text_area.extract_text() or "").strip()
+                cleaned = self._clean_text(page_text)
+                if cleaned:
+                    all_text_pages.append((page_no, cleaned))
+
+        # ---- 文本分片:跨页拼接为连续文本,在整本上切分,保留页码 ----
+        if all_text_pages:
+            full_text = ""
+            page_offsets = []            # [(page_no, start, end)]
+            for page_no, text in all_text_pages:
+                start = len(full_text)
+                full_text += text + "\n\n"
+                page_offsets.append((page_no, start, len(full_text)))
+
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=500,
+                chunk_overlap=80,
+                separators=["\n\n", "\n", "。", "！", "？", "；", "，", " ", ""],
+                add_start_index=True,
+            )
+            full_doc = Document(page_content=full_text)
+            text_chunks = splitter.split_documents([full_doc])
+
+            def page_of(start_idx):
+                for page_no, s, e in page_offsets:
+                    if start_idx < e:
+                        return page_no
+                return page_offsets[-1][0]
+
+            for chunk in text_chunks:
+                chunk.metadata["type"] = "text"
+                chunk.metadata["page"] = page_of(chunk.metadata["start_index"])
+                docs.append(chunk)
+
+        # 表格块排在文本块之前,便于后续按类型区分处理
+        return table_docs + docs
+
     def add_to_neo4j_qdrant(self, user_id: str, file_path: str, password: str = None):
         path = get_abs_path(file_path)
         doc_name = path.split("/")[-1]
-        documents = PyPDFLoader(path, password, mode="single").load()
-        chunks = self.spliter.split_documents(documents)
+        # 用 pdfplumber 完整链路提取文本 + 表格,已做清洗/分片/去重
+        chunks = self._extract_doc_chunk(path, password)
         with self.neo4j_client.session() as session:
             session.run(
                 """
@@ -65,9 +228,15 @@ class RagService:
                 doc_name=doc_name,
                 user_id=user_id
             )
+        text_order = 0
         for chunk in chunks:
             chunk_id = str(uuid.uuid4())
+            # 所有块(文本 + 表格)都进 Qdrant 做向量检索
             self._add_to_qdrant(user_id, chunk, chunk_id)
+            # 表格块是平铺行数据,只进向量库;硬塞实体图反而制造噪音
+            if chunk.metadata.get("type") == "table":
+                print(f"[表格块] 仅入 Qdrant, page={chunk.metadata.get('page')}")
+                continue
             chunks_with_entities = self._get_chunks_with_entities(chunk)
             entitys = chunks_with_entities.get("entities", [])
             for entity in entitys:
@@ -76,7 +245,8 @@ class RagService:
             for rel in relations:
                 print(rel)
             print("===" * 30)
-            self._add_to_neo4j(user_id, chunk, chunk_id, doc_name, chunks_with_entities)
+            self._add_to_neo4j(user_id, chunk, chunk_id, doc_name, chunks_with_entities, order=text_order)
+            text_order += 1
 
 
 
@@ -97,7 +267,7 @@ class RagService:
             ]
         )
 
-    def _add_to_neo4j(self, user_id: str, chunk: Document, chunk_id: str, doc_name: str, chunks_with_entities):
+    def _add_to_neo4j(self, user_id: str, chunk: Document, chunk_id: str, doc_name: str, chunks_with_entities, order: int = 0):
         # 2. 创建 Chunk 节点，并关联到 Document
         with self.neo4j_client.session() as session:
             session.run(
@@ -116,7 +286,7 @@ class RagService:
                 chunk_id=chunk_id,
                 text=chunk.page_content,
                 page=chunk.metadata.get("page", 0),
-                order=chunk.metadata.get("order", 0),
+                order=order,
                 user_id=user_id
             )
             # 3. 为当前 Chunk 创建或合并 Entity，并建立 MENTIONS 关系
@@ -276,10 +446,9 @@ class RagService:
 
 
 if __name__ == '__main__':
-    vector_store = RagService()
-    chunks = vector_store.retriever_chunks("666_999", "人体循环系统由什么组成？体循环和肺循环作用是什么？")
+    rag_service = RagService()
+    chunks = rag_service._extract_doc_chunk("rag/knowledge_base/888.pdf")
     for chunk in chunks:
-        print(chunk.chunk_id)
-        print(chunk.type)
-        print(chunk.text)
-        print(chunk.score)
+
+        print("-----------------")
+        print(chunk)
