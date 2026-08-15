@@ -6,7 +6,8 @@ from qdrant_client.http.models import ScoredPoint
 from agent.base import SimpleState
 from memory.manager import MemoryManager
 from rag.rag_service import Chunk
-from utils.prompt_loader import load_system_prompt
+from utils.prompt_loader import load_system_prompt, load_react_prompt
+from tools.executor import get_available_tool_names, render_tools_section
 
 def count_tokens(text: str) -> int:
     """计算文本token数（使用tiktoken）"""
@@ -16,6 +17,11 @@ def count_tokens(text: str) -> int:
     except Exception:
         # 降级方案：粗略估算（1 token ≈ 4 字符）
         return len(text) // 4
+
+
+def render_skills_manifest(active_skills: list[str]) -> str:
+    """渲染可用 skill 清单(改进2 实现,当前无 skill 返回空)。"""
+    return ""
 
 class ContextBuilder:
     """
@@ -29,7 +35,28 @@ class ContextBuilder:
     def __init__(self, memory_manager: MemoryManager):
         self.memory_manager = memory_manager
         self.system_prompt = load_system_prompt()
+        self.react_prompt = load_react_prompt()
         self.max_tokens = 4096
+
+    def build_react(self, state: SimpleState) -> str:
+        """构建 ReAct 循环用的系统提示词: 记忆上下文 + 可用工具 + 输出契约。"""
+        work_context = self.structure_work_memory(state.work_memory)
+        history_context = self.structure_history_memory(state.history_memory)
+        preference_context = self.structure_preference_memory(state.preference_memory)
+        semantic_context = self.structure_semantic_memory(state.semantic_memory)
+        episodic_context = self.structure_episodic_memory(state.episodic_memory)
+        available_tools = render_tools_section(get_available_tool_names(state.active_tools))
+        skills_manifest = render_skills_manifest(state.active_skills)
+        return self.react_prompt.format(
+            work_context=work_context,
+            history_context=history_context,
+            semantic_context=semantic_context,
+            preference_context=preference_context,
+            episodic_context=episodic_context,
+            available_tools=available_tools,
+            skills_manifest=skills_manifest,
+            query=state.query,
+        )
 
     def build(self, state: SimpleState) -> str:
         work_context = self.structure_work_memory(state.work_memory)

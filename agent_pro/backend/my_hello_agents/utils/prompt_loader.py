@@ -42,5 +42,15 @@ def load_system_prompt():
     except Exception:
         raise Exception
 
+def load_react_prompt():
+    try:
+        react_prompt_path = get_abs_path(prompts_config["react_system_prompt_path"])
+    except KeyError:
+        raise KeyError
+    try:
+        return open(react_prompt_path, "r", encoding="utf-8").read()
+    except Exception:
+        raise Exception
+
 if __name__ == '__main__':
     print(load_summary_prompt())

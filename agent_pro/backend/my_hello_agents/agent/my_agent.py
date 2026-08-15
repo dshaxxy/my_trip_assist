@@ -6,6 +6,13 @@ from langgraph.graph import StateGraph
 from mq.rabbit_sync_producer import MemorySyncProducer
 load_dotenv()
 from agent.base import SimpleState
+from agent.react import (
+    get_final_answer,
+    known_tool_names,
+    react_llm_node,
+    my_tool_node,
+    route_after_llm,
+)
 from utils.context_tool import ContextBuilder, count_tokens
 from client.model import get_model
 from client.memory_client import memory_manager
@@ -22,7 +29,9 @@ def start_node(state: SimpleState) -> SimpleState:
     """
     key = f"{state.user_id}_{state.session_id}"
     memory_manager.add_history_memory(key, HumanMessage(content=state.query))
-    return state
+    return {
+        "messages": [HumanMessage(content=state.query)]
+    }
 
 def work_memory_node(state: SimpleState) -> dict:
     """
@@ -153,62 +162,14 @@ def semantic_memory_node(state: SimpleState) -> dict:
 
 def context_node(state: SimpleState) -> SimpleState:
     """
-    上下文节点, 加载上下文
+    上下文节点, 构建 ReAct 系统提示词(记忆 + 可用工具 + 输出契约)
     :param state:
     :return:
     """
-    state.system_prompt = context_builder.build(state)
+    state.system_prompt = context_builder.build_react(state)
     context_tokens = count_tokens(state.system_prompt)
     print("[上下文]：", state.system_prompt)
     print("[上下文token数]：", context_tokens)
-    return state
-
-# def llm_node(state: SimpleState) -> SimpleState:
-#     """
-#     LLM 节点: 使用 LLM 生成回复
-#     :param state:
-#     :return:
-#     """
-#     model = get_model()
-#     prompt = state.system_prompt
-#     result = model.invoke(prompt.format(query=state.query))
-#     state.messages.append(result)
-#     return state
-
-# def llm_node(state: SimpleState) -> SimpleState:
-#     """
-#     LLM 节点: 使用 LLM 生成回复
-#     :param state:
-#     :return:
-#     """
-#     model = get_model()
-#     prompt = state.system_prompt
-#     full_response = ""
-#     for result in model.stream(prompt.format(query=state.query)):
-#         full_response += result.content
-#     state.messages.append(AIMessage(content=full_response))
-#     return state
-
-# async def llm_node(state: SimpleState) -> SimpleState:
-#     model = get_model()
-#     prompt = state.system_prompt
-#     result = await model.ainvoke(prompt.format(query=state.query))
-#     state.messages.append(result)
-#     return state
-
-async def llm_node(state: SimpleState) -> SimpleState:
-    model = get_model()
-    prompt_text = state.system_prompt.format(query=state.query)
-
-    full_response = ""
-    async for chunk in model.astream(prompt_text):
-        text_piece = chunk.content
-        if not text_piece:
-            continue
-        full_response += text_piece
-
-    from langchain_core.messages import AIMessage
-    state.messages.append(AIMessage(content=full_response))
     return state
 
 def memory_update_node(state: SimpleState) -> SimpleState:
@@ -218,8 +179,14 @@ def memory_update_node(state: SimpleState) -> SimpleState:
     :return:
     """
     key = f"{state.user_id}_{state.session_id}"
-    memory_manager.add_history_memory(key, state.messages[-1])
-    memory_manager.add_work_memory(key, state.messages)
+    final_answer = get_final_answer(state, known_tool_names(state.user_id, state.active_tools))
+    if final_answer:
+        memory_manager.add_history_memory(key, AIMessage(content=final_answer))
+        # 工作记忆只保留"用户可见"的问答对, 不含工具轮次的中间消息
+        memory_manager.add_work_memory(key, [
+            HumanMessage(content=state.query),
+            AIMessage(content=final_answer),
+        ])
     messages = memory_manager.get_work_memory(key)
 
     if len(messages) > int(os.getenv("MAX_WORKING_MEMORY", 20)):
@@ -253,7 +220,8 @@ builder.add_node("history_memory", history_memory_node)
 builder.add_node("preference_memory", preference_memory_node)
 builder.add_node("semantic_memory", semantic_memory_node)
 builder.add_node("context", context_node)
-builder.add_node("llm", llm_node)
+builder.add_node("react_llm", react_llm_node)
+builder.add_node("my_tool", my_tool_node)
 builder.add_node("memory_update", memory_update_node)
 builder.add_node("end", end_node)
 
@@ -271,8 +239,13 @@ builder.add_edge("history_memory", "context")
 builder.add_edge("semantic_memory", "context")
 builder.add_edge("preference_memory", "context")
 
-builder.add_edge("context", "llm")
-builder.add_edge("llm", "memory_update")
+builder.add_edge("context", "react_llm")
+builder.add_conditional_edges(
+    "react_llm",
+    route_after_llm,
+    {"final": "memory_update", "tool": "my_tool"},
+)
+builder.add_edge("my_tool", "react_llm")
 builder.add_edge("memory_update", "end")
 builder.add_edge("end", END)
 
@@ -284,8 +257,18 @@ def get_agent():
 import asyncio
 
 async def test():
-    res = await llm_node(SimpleState(user_id="666", session_id="999", query="给我写一篇500字的关于AI的文章", messages=[]))
-    print(res)
+    input_state = SimpleState(
+        user_id="666",
+        session_id="999",
+        query="给我写一篇500字的关于AI的文章",
+        messages=[],
+    )
+    res = await graph.ainvoke(
+        input_state,
+        config={"recursion_limit": 60},
+    )
+    print("=" * 40)
+    print("最终回答：", get_final_answer(res, known_tool_names(res.user_id, res.active_tools)))
 
 if __name__ == "__main__":
     async def sse_chat():
@@ -293,20 +276,10 @@ if __name__ == "__main__":
             user_id="666",
             session_id="999",
             query="给我写一篇500字的关于AI的文章",
-            messages=[]
+            messages=[],
         )
+        async for chunk in graph.astream(input_state, config={"recursion_limit": 60}):
+            for node_name, update in chunk.items():
+                print(f"[{node_name}]")
 
-        async for event in graph.astream_events(input_state, version="v2"):
-            # 只捕获 llm 节点内部 LLM 的输出
-            node_name = event["metadata"].get("langgraph_node")
-            if (
-                    event["event"] == "on_chat_model_stream"
-                    and node_name == "llm"
-            ):
-                chunk = event["data"]["chunk"]
-                text_piece = chunk.content
-                if text_piece:
-                    print(text_piece, end="")
-                    # yield build_sse("message", {"content": text_piece, "done": False})
-
-    asyncio.run(sse_chat())
+    asyncio.run(test())

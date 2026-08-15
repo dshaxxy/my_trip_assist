@@ -19,3 +19,6 @@ class SimpleState(BaseModel):
     episodic_memory: list = None
     preference_memory: str = ""
     system_prompt: str = ""
+    # 渐进式披露: 已激活的工具名与 skill 名(改进2 使用)
+    active_tools: list[str] = []
+    active_skills: list[str] = []

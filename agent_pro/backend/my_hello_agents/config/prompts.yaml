@@ -2,3 +2,4 @@ summary_prompt_path: prompts/summary_prompt.txt
 preference_prompt_path: prompts/preference_prompt.txt
 extract_prompt_path: prompts/extract_prompt.txt
 system_prompt_path: prompts/system_prompt.txt
+react_system_prompt_path: prompts/react_system_prompt.txt
