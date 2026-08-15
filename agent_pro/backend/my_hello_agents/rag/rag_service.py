@@ -1,5 +1,7 @@
 import json
+import os
 import re
+import tempfile
 import uuid
 
 from dotenv import load_dotenv
@@ -61,6 +63,55 @@ class RagService:
         first_page = pdf.pages[0]
         text = (first_page.extract_text() or "").strip()
         return len(text) < 20 or "�" in text
+
+    @staticmethod
+    def _ocr_page_images(file_path: str, password: str = None, dpi: int = 200) -> list[tuple[int, str]]:
+        """用 PyMuPDF 把 PDF 每页渲染为临时 PNG,返回 [(page_no, image_path)]。"""
+        import fitz
+
+        doc = fitz.open(file_path)
+        if password:
+            doc.authenticate(password)
+        images = []
+        try:
+            for page in doc:
+                pix = page.get_pixmap(dpi=dpi)
+                fd, tmp_path = tempfile.mkstemp(suffix=".png")
+                os.close(fd)          # Windows 上必须释放句柄才能写入
+                pix.save(tmp_path)
+                images.append((page.number + 1, tmp_path))
+        finally:
+            doc.close()
+        return images
+
+    def _ocr_pdf_with_dashscope(self, file_path: str, password: str = None) -> list[tuple[int, str]]:
+        """扫描版 PDF 逐页 OCR:渲染为图片后调 qwen-vl-ocr,返回 [(page_no, ocr_text)]。"""
+        from dashscope import MultiModalConversation
+
+        images = self._ocr_page_images(file_path, password)
+        pages = []
+        try:
+            for page_no, img_path in images:
+                messages = [{"role": "user", "content": [
+                    {"image": f"file://{img_path}"},
+                    {"text": "请识别这张图片中的所有文字,保留段落结构,输出纯文本。"},
+                ]}]
+                resp = MultiModalConversation.call(model="qwen-vl-ocr", messages=messages)
+                if resp.status_code == 200:
+                    content = resp.output.choices[0].message.content
+                    # content 可能是 str 或 list[dict]
+                    if isinstance(content, str):
+                        text = content
+                    else:
+                        text = "".join(item.get("text", "") for item in content if isinstance(item, dict))
+                else:
+                    text = ""
+                pages.append((page_no, text))
+        finally:
+            for _, img_path in images:
+                if os.path.exists(img_path):
+                    os.remove(img_path)
+        return pages
 
     @staticmethod
     def _clean_text(text: str, merge_lines: bool = True) -> str:
@@ -128,10 +179,9 @@ class RagService:
 
     def _extract_doc_chunk(self, file_path: str, password: str = None) -> list[Document]:
         """
-        使用 pdfplumber 完成 PDF 的加载、清洗、分片(含表格),返回 Document 列表。
-        - 扫描版 PDF 直接抛错,提示走 OCR
-        - 文本块:跨页拼接后统一按语义切分,保留 page 元数据
-        - 表格块:转 Markdown 表格,按行带切分,type="table" 标注
+        加载 PDF 并分片,返回 Document 列表。
+        - 文本版 PDF:pdfplumber 提取,表格转 Markdown 块,文本走清洗+语义切分
+        - 扫描版 PDF:检测到首页无文本层后,自动走 qwen-vl-ocr 逐页识别
         - 用 outside_bbox 裁掉表格区域,避免表格内容在文本块中重复
         """
         import logging
@@ -144,10 +194,17 @@ class RagService:
         docs: list[Document] = []
 
         with pdfplumber.open(path, password=password) as pdf:
+            # 扫描版 PDF:首页无文本层,走 OCR
             if self._detect_scanned(pdf):
-                raise ValueError(
-                    f"检测到扫描版 PDF(首页无文本层): {path},请先对文档做 OCR 再入库"
-                )
+                print(f"[OCR] 检测到扫描版 PDF: {path},调用 qwen-vl-ocr 逐页识别...")
+                ocr_pages = self._ocr_pdf_with_dashscope(path, password)
+                all_text_pages = []
+                for page_no, text in ocr_pages:
+                    cleaned = self._clean_text(text)
+                    if cleaned:
+                        all_text_pages.append((page_no, cleaned))
+                docs.extend(self._chunk_text_pages(all_text_pages))
+                return docs
 
             all_text_pages = []          # [(page_no, cleaned_text)]
             table_docs: list[Document] = []
@@ -180,37 +237,42 @@ class RagService:
                 if cleaned:
                     all_text_pages.append((page_no, cleaned))
 
-        # ---- 文本分片:跨页拼接为连续文本,在整本上切分,保留页码 ----
-        if all_text_pages:
-            full_text = ""
-            page_offsets = []            # [(page_no, start, end)]
-            for page_no, text in all_text_pages:
-                start = len(full_text)
-                full_text += text + "\n\n"
-                page_offsets.append((page_no, start, len(full_text)))
-
-            splitter = RecursiveCharacterTextSplitter(
-                chunk_size=500,
-                chunk_overlap=80,
-                separators=["\n\n", "\n", "。", "！", "？", "；", "，", " ", ""],
-                add_start_index=True,
-            )
-            full_doc = Document(page_content=full_text)
-            text_chunks = splitter.split_documents([full_doc])
-
-            def page_of(start_idx):
-                for page_no, s, e in page_offsets:
-                    if start_idx < e:
-                        return page_no
-                return page_offsets[-1][0]
-
-            for chunk in text_chunks:
-                chunk.metadata["type"] = "text"
-                chunk.metadata["page"] = page_of(chunk.metadata["start_index"])
-                docs.append(chunk)
-
+        docs.extend(self._chunk_text_pages(all_text_pages))
         # 表格块排在文本块之前,便于后续按类型区分处理
         return table_docs + docs
+
+    def _chunk_text_pages(self, all_text_pages: list[tuple[int, str]]) -> list[Document]:
+        """跨页拼接为连续文本,统一按语义切分,保留 page 元数据。"""
+        docs: list[Document] = []
+        if not all_text_pages:
+            return docs
+        full_text = ""
+        page_offsets = []            # [(page_no, start, end)]
+        for page_no, text in all_text_pages:
+            start = len(full_text)
+            full_text += text + "\n\n"
+            page_offsets.append((page_no, start, len(full_text)))
+
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=500,
+            chunk_overlap=80,
+            separators=["\n\n", "\n", "。", "！", "？", "；", "，", " ", ""],
+            add_start_index=True,
+        )
+        full_doc = Document(page_content=full_text)
+        text_chunks = splitter.split_documents([full_doc])
+
+        def page_of(start_idx):
+            for page_no, s, e in page_offsets:
+                if start_idx < e:
+                    return page_no
+            return page_offsets[-1][0]
+
+        for chunk in text_chunks:
+            chunk.metadata["type"] = "text"
+            chunk.metadata["page"] = page_of(chunk.metadata["start_index"])
+            docs.append(chunk)
+        return docs
 
     def add_to_neo4j_qdrant(self, user_id: str, file_path: str, password: str = None):
         path = get_abs_path(file_path)
