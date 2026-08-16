@@ -22,3 +22,5 @@ class SimpleState(BaseModel):
     # 渐进式披露: 已激活的工具名与 skill 名(改进2 使用)
     active_tools: list[str] = []
     active_skills: list[str] = []
+    # 已激活 skill 注入提示词的指令段(skill.md 全文 + 工具描述)
+    skill_instructions: str = ""

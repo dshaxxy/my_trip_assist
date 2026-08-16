@@ -8,6 +8,7 @@ from memory.manager import MemoryManager
 from rag.rag_service import Chunk
 from utils.prompt_loader import load_system_prompt, load_react_prompt
 from tools.executor import get_available_tool_names, render_tools_section
+from skills import render_skills_manifest
 
 def count_tokens(text: str) -> int:
     """计算文本token数（使用tiktoken）"""
@@ -17,11 +18,6 @@ def count_tokens(text: str) -> int:
     except Exception:
         # 降级方案：粗略估算（1 token ≈ 4 字符）
         return len(text) // 4
-
-
-def render_skills_manifest(active_skills: list[str]) -> str:
-    """渲染可用 skill 清单(改进2 实现,当前无 skill 返回空)。"""
-    return ""
 
 class ContextBuilder:
     """
