@@ -96,6 +96,11 @@ async def run_skill_flow():
 
 if __name__ == "__main__":
     async def main():
+        from client.mcp_client import mcp_client
+        await mcp_client.connect()
+        await mcp_client.register_tools()
+        # 改进三: professional_qa skill 联网搜索链路(无 TAVILY key 时返回未配置错误, 链路仍通)
+        await run("请激活专业知识问答 skill, 然后联网搜索 2026 年上海中考时间")
         # 工具轮 + 最终回答
         await run("现在几点钟了? 请用工具获取准确时间")
         # 纯直接回答(不调用工具)

@@ -91,6 +91,11 @@ class SkillManager:
     def get_tool_impl(self, tool_name: str):
         return self._tool_impls.get(tool_name)
 
+    def register_external_tool(self, name: str, spec: dict, impl):
+        """外部注册工具(如 MCP 工具), 供 skill 加载后由 create_tool_executor 装配。"""
+        self._tool_specs[name] = spec
+        self._tool_impls[name] = impl
+
     def register_skill_tools(self, skill: Skill):
         """把 skill 声明且已实现的工具 spec 注册进提示词渲染用的 TOOL_SPECS。"""
         from tools.executor import TOOL_SPECS, register_tool_spec

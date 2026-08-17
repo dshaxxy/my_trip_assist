@@ -51,6 +51,8 @@ class ChatService:
         )
 
         try:
+            # 运行时 active_tools 随 activate_skill 更新, 初始取 input_state
+            active_tools = list(input_state.active_tools)
             async for update in self._agent.astream(
                     input_state,
                     stream_mode="updates",
@@ -59,10 +61,12 @@ class ChatService:
                 for node_name, node_update in update.items():
                     if node_name == "react_llm":
                         for event in self._classify_llm_output(
-                                node_update, input_state.user_id, input_state.active_tools
+                                node_update, input_state.user_id, active_tools
                         ):
                             yield event
                     elif node_name == "my_tool":
+                        if isinstance(node_update, dict) and node_update.get("active_tools") is not None:
+                            active_tools = list(node_update["active_tools"])
                         messages = self._node_messages(node_update)
                         last = messages[-1] if messages else None
                         if isinstance(last, HumanMessage):

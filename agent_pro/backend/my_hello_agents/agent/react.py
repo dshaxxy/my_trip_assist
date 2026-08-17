@@ -135,7 +135,7 @@ async def my_tool_node(state: SimpleState) -> dict:
         return activate_skill_node(state, action_input)
 
     executor = create_tool_executor(state.user_id, state.active_tools)
-    observation = executor.execute(action, action_input)
+    observation = await executor.execute(action, action_input)
     print(f"[工具执行] {action} <- {action_input}")
     print(f"[观察结果] {observation}")
     return {

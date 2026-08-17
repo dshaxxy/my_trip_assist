@@ -1,5 +1,7 @@
 import datetime
+import inspect
 import json
+from functools import partial
 from typing import Any, Callable
 
 from skills import skill_manager
@@ -77,13 +79,15 @@ class ToolExecutor:
     def tool_names(self) -> set[str]:
         return set(self._funcs.keys())
 
-    def execute(self, action: str, action_input: dict | None) -> str:
-        """执行工具,返回 observation 字符串。任何异常都转成可读的观察结果。"""
+    async def execute(self, action: str, action_input: dict | None) -> str:
+        """执行工具, 返回 observation 字符串。支持同步与 async 实现; 任何异常转成可读观察结果。"""
         func = self._funcs.get(action)
         if func is None:
             return f"错误: 未知工具 {action},请检查工具名,或直接用 final 回答用户。"
         try:
             result = func(**(action_input or {}))
+            if inspect.isawaitable(result):
+                result = await result
             return str(result)
         except TypeError as e:
             return f"工具 {action} 参数错误: {e}"
@@ -96,11 +100,15 @@ class ToolExecutor:
 
 
 def create_tool_executor(user_id: str, active_tools: list[str]) -> ToolExecutor:
-    """按请求构建执行器。user_id 用于绑定私有工具(改进3:RAG 检索)。
-    active_tools 里来自已激活 skill 的工具, 从 SkillManager 取实现注册。"""
+    """按请求构建执行器。active_tools 里来自已激活 skill 的工具从 SkillManager 取实现注册;
+    实现签名含 user_id 参数的工具(如 rag_retrieve)用 partial 绑定当前用户。"""
     executor = ToolExecutor()
     for tool_name in active_tools or []:
         impl = skill_manager.get_tool_impl(tool_name)
-        if impl is not None:
-            executor.register(tool_name, impl)
+        if impl is None:
+            continue
+        sig = inspect.signature(impl)
+        if "user_id" in sig.parameters:
+            impl = partial(impl, user_id=user_id)
+        executor.register(tool_name, impl)
     return executor
